@@ -627,6 +627,25 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
     logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
+
+def trigger_immediate_run(job_id: str) -> bool:
+    """Trigger an immediate run for a job by setting next_run_at to now.
+
+    This is used by the [CONTINUE] marker to chain job executions without
+    waiting for the next scheduled interval.
+
+    Returns True if the job was found and updated, False otherwise.
+    """
+    jobs = load_jobs()
+    for job in jobs:
+        if job['id'] == job_id:
+            job['next_run_at'] = _hermes_now().isoformat()
+            save_jobs(jobs)
+            logger.info('Job %s scheduled for immediate run', job_id)
+            return True
+    return False
+
+
 def advance_next_run(job_id: str) -> bool:
     """Preemptively advance next_run_at for a recurring job before execution.
 

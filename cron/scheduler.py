@@ -55,6 +55,11 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
+# Sentinel: when a cron agent wants to continue immediately with the next task,
+# it can end its response with this marker. The scheduler will trigger the
+# same job again immediately (without waiting for the next scheduled time).
+CONTINUE_MARKER = "[CONTINUE]"
+
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = get_hermes_home()
 
