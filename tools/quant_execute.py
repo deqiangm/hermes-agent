@@ -1,15 +1,17 @@
 """Quantitative trading execution tool for Hermes Agent.
 
+Supports crypto (CCXT) and stocks (yfinance) via quant_data asset_class parameter.
+
 Handles paper trading (simulated) and live order placement with safety layers:
 - Paper mode: simulate orders, track positions in local SQLite DB
 - Live mode: requires QUANT_LIVE_TRADING_ENABLED env var; otherwise rejected
 - Max position size: configurable via QUANT_MAX_POSITION_USD, default $5000
 - Kill switch: if daily loss > 5%, reject all orders
 - Safety Shell enhancements:
-  - Stop-loss: auto-set at 1.5x ATR below entry on buy; auto-sell on breach
-  - Consecutive loss cooldown: 4h cooldown after 3 consecutive losing trades
-  - Max open positions: limit to 3 concurrent positions
-  - stop_check action: scan all positions and auto-sell if stop-loss breached
+ - Stop-loss: auto-set at 1.5x ATR below entry on buy; auto-sell on breach
+ - Consecutive loss cooldown: 4h cooldown after 3 consecutive losing trades
+ - Max open positions: limit to 3 concurrent positions
+ - stop_check action: scan all positions and auto-sell if stop-loss breached
 - Supported actions: buy, sell, status, history, balance, stop_check
 """
 
@@ -150,7 +152,13 @@ def _init_tables(conn: sqlite3.Connection) -> None:
         conn.execute("SELECT stop_loss_price FROM positions LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE positions ADD COLUMN stop_loss_price REAL DEFAULT NULL")
-    conn.commit()
+        conn.commit()
+    # Migration: add asset_class column if it doesn't exist
+    try:
+        conn.execute("SELECT asset_class FROM positions LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE positions ADD COLUMN asset_class TEXT DEFAULT 'crypto'")
+        conn.commit()
 
 
 def _reset_balance_if_needed(conn: sqlite3.Connection) -> None:
@@ -166,11 +174,53 @@ def _reset_balance_if_needed(conn: sqlite3.Connection) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Price fetching via ccxt
+# Price fetching (multi-asset: crypto via ccxt, stock/fx via yfinance)
 # ---------------------------------------------------------------------------
 
-def _fetch_current_price(symbol: str, exchange_id: str = DEFAULT_EXCHANGE) -> Optional[float]:
-    """Fetch the current ticker price for a symbol using ccxt."""
+def _yf_symbol(symbol: str, asset_class: str) -> str:
+    """Convert symbol to yfinance format.
+
+    stock: 'AAPL' -> 'AAPL'
+    fx:    'EUR/USD' -> 'EURUSD=X'
+    """
+    if asset_class == "fx":
+        if "=X" in symbol:
+            return symbol
+        return symbol.replace("/", "") + "=X"
+    return symbol
+
+
+def _fetch_current_price(
+    symbol: str,
+    exchange_id: str = DEFAULT_EXCHANGE,
+    asset_class: str = "crypto",
+) -> Optional[float]:
+    """Fetch the current ticker price for a symbol.
+
+    crypto -> CCXT (exchange_id)
+    stock/fx -> yfinance
+    """
+    if asset_class in ("stock", "fx"):
+        try:
+            import yfinance as yf
+            yf_sym = _yf_symbol(symbol, asset_class)
+            tk = yf.Ticker(yf_sym)
+            info = tk.info
+            price = info.get("currentPrice") or info.get("regularMarketPrice")
+            if price is not None:
+                return float(price)
+            # Fallback: try fast_info
+            try:
+                return float(tk.fast_info.last_price)
+            except Exception:
+                pass
+            logger.error("No price in yfinance for %s (%s)", symbol, asset_class)
+            return None
+        except Exception as e:
+            logger.error("Failed to fetch yfinance price for %s (%s): %s", symbol, asset_class, e)
+            return None
+
+    # Default: crypto via CCXT
     try:
         import ccxt
         exchange_class = getattr(ccxt, exchange_id, None)
@@ -357,6 +407,7 @@ def _handle_buy(args: dict, **kw) -> str:
     mode = args.get("mode", "paper")
     exchange_id = args.get("exchange", DEFAULT_EXCHANGE)
     atr = args.get("atr")
+    asset_class = args.get("asset_class", "crypto")
 
     if amount <= 0:
         return tool_error("Amount must be positive for buy orders.")
@@ -398,7 +449,7 @@ def _handle_buy(args: dict, **kw) -> str:
                 return tool_error("Price is required for limit orders.")
             exec_price = float(price_arg)
         else:
-            exec_price = _fetch_current_price(symbol, exchange_id)
+            exec_price = _fetch_current_price(symbol, exchange_id, asset_class)
             if exec_price is None:
                 return tool_error(
                     f"Could not fetch current price for {symbol} on {exchange_id}. "
@@ -461,7 +512,7 @@ def _handle_buy(args: dict, **kw) -> str:
 
         # Track position
         existing = conn.execute(
-            "SELECT id, amount, entry_price, stop_loss_price FROM positions WHERE symbol = ? AND side = 'buy'",
+            "SELECT id, amount, entry_price, stop_loss_price, asset_class FROM positions WHERE symbol = ? AND side = 'buy'",
             (symbol,),
         ).fetchone()
 
@@ -495,9 +546,9 @@ def _handle_buy(args: dict, **kw) -> str:
             )
         else:
             conn.execute(
-                "INSERT INTO positions (symbol, side, amount, entry_price, stop_loss_price, created_at, updated_at) "
-                "VALUES (?, 'buy', ?, ?, ?, ?, ?)",
-                (symbol, amount, exec_price, stop_loss_price, now, now),
+                "INSERT INTO positions (symbol, side, amount, entry_price, stop_loss_price, asset_class, created_at, updated_at) "
+                "VALUES (?, 'buy', ?, ?, ?, ?, ?, ?)",
+                (symbol, amount, exec_price, stop_loss_price, asset_class, now, now),
             )
 
         conn.commit()
@@ -530,6 +581,7 @@ def _handle_sell(args: dict, **kw) -> str:
     price_arg = args.get("price")
     mode = args.get("mode", "paper")
     exchange_id = args.get("exchange", DEFAULT_EXCHANGE)
+    asset_class = args.get("asset_class", "crypto")
 
     if amount <= 0:
         return tool_error("Amount must be positive for sell orders.")
@@ -550,7 +602,7 @@ def _handle_sell(args: dict, **kw) -> str:
 
         # Check we have enough of the position
         position = conn.execute(
-            "SELECT id, amount, entry_price, stop_loss_price FROM positions WHERE symbol = ? AND side = 'buy'",
+            "SELECT id, amount, entry_price, stop_loss_price, asset_class FROM positions WHERE symbol = ? AND side = 'buy'",
             (symbol,),
         ).fetchone()
         if position is None or position["amount"] < amount:
@@ -560,16 +612,19 @@ def _handle_sell(args: dict, **kw) -> str:
                 f"requested to sell {amount}."
             )
 
+        # Use position's asset_class if available, otherwise fall back to args
+        pos_asset_class = position["asset_class"] if position and position["asset_class"] else asset_class
+
         # Determine execution price
         if order_type == "limit":
             if price_arg is None:
                 return tool_error("Price is required for limit orders.")
             exec_price = float(price_arg)
         else:
-            exec_price = _fetch_current_price(symbol, exchange_id)
+            exec_price = _fetch_current_price(symbol, exchange_id, pos_asset_class)
             if exec_price is None:
                 return tool_error(
-                    f"Could not fetch current price for {symbol} on {exchange_id}."
+                    f"Could not fetch current price for {symbol} ({pos_asset_class}) on {exchange_id}."
                 )
 
         size_msg = _check_position_size(symbol, amount, exec_price)
@@ -677,26 +732,28 @@ def _handle_status(args: dict, **kw) -> str:
     """Return current positions and unrealized PnL."""
     symbol = args.get("symbol", DEFAULT_SYMBOL)
     exchange_id = args.get("exchange", DEFAULT_EXCHANGE)
+    default_asset_class = args.get("asset_class", "crypto")
 
     conn = _get_db_connection()
     try:
         _reset_balance_if_needed(conn)
 
         positions = conn.execute(
-            "SELECT id, symbol, side, amount, entry_price, stop_loss_price, created_at FROM positions"
+            "SELECT id, symbol, side, amount, entry_price, stop_loss_price, asset_class, created_at FROM positions"
         ).fetchall()
 
-        current_price = _fetch_current_price(symbol, exchange_id)
+        current_price = _fetch_current_price(symbol, exchange_id, default_asset_class)
 
         position_list = []
         total_unrealized_pnl = 0.0
         for pos in positions:
             pos_symbol = pos["symbol"]
+            pos_ac = pos["asset_class"] if pos["asset_class"] else default_asset_class
             # Try to get price for each position's symbol
             if pos_symbol == symbol and current_price is not None:
                 price = current_price
             else:
-                price = _fetch_current_price(pos_symbol, exchange_id)
+                price = _fetch_current_price(pos_symbol, exchange_id, pos_ac)
 
             entry = pos["entry_price"]
             amt = pos["amount"]
@@ -826,13 +883,14 @@ def _handle_balance(args: dict, **kw) -> str:
 def _handle_stop_check(args: dict, **kw) -> str:
     """Scan all positions with stop-loss prices and auto-sell if breached."""
     exchange_id = args.get("exchange", DEFAULT_EXCHANGE)
+    default_asset_class = args.get("asset_class", "crypto")
 
     conn = _get_db_connection()
     try:
         _reset_balance_if_needed(conn)
 
         positions = conn.execute(
-            "SELECT id, symbol, side, amount, entry_price, stop_loss_price, created_at "
+            "SELECT id, symbol, side, amount, entry_price, stop_loss_price, asset_class, created_at "
             "FROM positions WHERE stop_loss_price IS NOT NULL"
         ).fetchall()
 
@@ -849,7 +907,8 @@ def _handle_stop_check(args: dict, **kw) -> str:
         for pos in positions:
             pos_symbol = pos["symbol"]
             stop_price = pos["stop_loss_price"]
-            current_price = _fetch_current_price(pos_symbol, exchange_id)
+            pos_ac = pos["asset_class"] if pos["asset_class"] else default_asset_class
+            current_price = _fetch_current_price(pos_symbol, exchange_id, pos_ac)
             if current_price is None:
                 safe.append({
                     "id": pos["id"],
@@ -1038,6 +1097,16 @@ QUANT_EXECUTE_SCHEMA = {
                     "Average True Range value for the symbol. When provided with a 'buy' action, "
                     "a stop-loss price is automatically set at entry_price - 1.5 * ATR."
                 ),
+            },
+            "asset_class": {
+                "type": "string",
+                "enum": ["crypto", "stock", "fx"],
+                "description": (
+                    "Asset class for price fetching. 'crypto' uses CCXT (default), "
+                    "'stock' and 'fx' use yfinance. Stored per-position so sell/status "
+                    "use the correct data source automatically."
+                ),
+                "default": "crypto",
             },
         },
         "required": ["action"],

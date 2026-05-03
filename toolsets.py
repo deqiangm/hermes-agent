@@ -61,7 +61,7 @@ _HERMES_CORE_TOOLS = [
  # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
  "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
  # Quant trading tools (gated on ccxt via check_fn)
- "quant_data", "quant_indicators", "quant_execute", "quant_journal", "quant_dashboard",
+ "quant_data", "quant_indicators", "quant_execute", "quant_journal", "quant_dashboard", "quant_backtest",
 ]
 
 
@@ -204,8 +204,8 @@ TOOLSETS = {
  },
 
 	"quant": {
-		"description": "Quantitative trading: market data, technical indicators, paper/live trading, journaling, dashboard",
-		"tools": ["quant_data", "quant_indicators", "quant_execute", "quant_journal", "quant_dashboard"],
+		"description": "Quantitative trading: market data, technical indicators, paper/live trading, journaling, dashboard, backtesting",
+		"tools": ["quant_data", "quant_indicators", "quant_execute", "quant_journal", "quant_dashboard", "quant_backtest"],
 		"includes": []
 	},
 
