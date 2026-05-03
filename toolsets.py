@@ -58,8 +58,10 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
-    # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
-    "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+ # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
+ "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+ # Quant trading tools (gated on ccxt via check_fn)
+ "quant_data", "quant_indicators", "quant_execute", "quant_journal", "quant_dashboard",
 ]
 
 
@@ -195,11 +197,17 @@ TOOLSETS = {
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
-    "homeassistant": {
-        "description": "Home Assistant smart home control and monitoring",
-        "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
-        "includes": []
-    },
+ "homeassistant": {
+ "description": "Home Assistant smart home control and monitoring",
+ "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+ "includes": []
+ },
+
+	"quant": {
+		"description": "Quantitative trading: market data, technical indicators, paper/live trading, journaling, dashboard",
+		"tools": ["quant_data", "quant_indicators", "quant_execute", "quant_journal", "quant_dashboard"],
+		"includes": []
+	},
 
 
     # Scenario-specific toolsets

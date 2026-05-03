@@ -157,8 +157,14 @@ def _discover_tools():
         "tools.process_registry",
         "tools.send_message_tool",
         # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
-        "tools.homeassistant_tool",
-    ]
+ "tools.homeassistant_tool",
+    # Quant trading tools
+    "tools.quant_data",
+    "tools.quant_indicators",
+    "tools.quant_execute",
+    "tools.quant_journal",
+    "tools.quant_dashboard",
+]
     import importlib
     for mod_name in _modules:
         try:
